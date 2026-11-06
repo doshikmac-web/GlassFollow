@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.0
+- Screenshots: while Win+Shift+S or PrtScn is active, the glass is frozen and, together with the app windows,
+  becomes visible to capture. `--no-shot` turns this off.
+- The Windhawk mod hides windows from capture only while GlassFollow is running.
+- Windhawk mod: per-app settings (enabled, hide from capture, transparency method, window classes).
+
 ## 1.0.0
 - Liquid-glass refraction behind any number of windows, one capture session per monitor.
 - Follows windows across monitors with different refresh rates.

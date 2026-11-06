@@ -3,7 +3,7 @@
 // Built on the MIT-licensed correct-liquid-glass demo (capture + shader + window-region approach).
 //
 // Usage: GlassFollow.exe [--corner 22] [--thick 36] [--fps 200] [--pad 16] <spec> [<spec> ...]
-//        --hidden hides the console window (autostart)
+//        --hidden hides the console window (autostart); --no-shot ignores Win+Shift+S / PrtScn
 //        GlassFollow.exe --list            (prints visible windows: process / class / size / title, to build specs)
 //   spec = process[:WindowClass[:TitleSubstring]]   (process without .exe)
 //   process may be * (any process), class may end with * (prefix match)
@@ -26,13 +26,14 @@ using WinRT;
 var inv = CultureInfo.InvariantCulture;
 float cornerArg = 22f, thickArg = 36f, padArg = 16f;
 int fpsCap = 200, delaySec = 0;
-bool listMode = false, hidden = false;
+bool listMode = false, hidden = false, noShot = false;
 var specs = new List<Spec>();
 for (int i = 0; i < args.Length; i++)
 {
     string a = args[i];
     if (a == "--list") { listMode = true; continue; }
     if (a == "--hidden") { hidden = true; continue; } // no console window (for autostart)
+    if (a == "--no-shot") { noShot = true; continue; } // do not watch for Win+Shift+S / PrtScn
     if (a.StartsWith("--") && i + 1 < args.Length)
     {
         string v = args[++i];
@@ -115,6 +116,8 @@ long processed = 0, skipped = 0;
 Native.WndProc proc = (h, m, w, l) => Native.DefWindowProcW(h, m, w, l);
 var wc = new Native.WNDCLASSEXW { cbSize = Marshal.SizeOf<Native.WNDCLASSEXW>(), lpfnWndProc = Marshal.GetFunctionPointerForDelegate(proc), lpszClassName = "GlassFollow" };
 Native.RegisterClassExW(ref wc);
+// invisible control window: the Windhawk mod looks for it to know that GlassFollow is running
+Native.CreateWindowExW(0x80, "GlassFollow", "GlassFollow.Control", unchecked((int)0x80000000), 0, 0, 0, 0, 0, 0, 0, 0);
 
 // --- d3d ---
 D3D11.D3D11CreateDevice(null, DriverType.Hardware, DeviceCreationFlags.BgraSupport, [FeatureLevel.Level_11_1, FeatureLevel.Level_11_0], out ID3D11Device? device, out ID3D11DeviceContext? ctx).CheckError();
@@ -255,7 +258,7 @@ void StartMon(Mon m)
     pool.FrameArrived += (sender, _) =>
     {
         using var frame = sender.TryGetNextFrame();
-        if (frame is null || st.Paused) return; // paused for a fullscreen app: no copies, no rendering
+        if (frame is null || st.Paused || st.Frozen) return; // paused (fullscreen app) or screenshot: no copies, no rendering
         using var tex = new ID3D11Texture2D(frame.Surface.As<IDirect3DDxgiInterfaceAccess>().GetInterface(in texIid));
         lock (ctx!) ctx.CopyResource(m.Tex!, tex); // newest full frame, so a moved/resized window can re-render without a new capture
         foreach (var gl in st.Glasses)
@@ -389,6 +392,68 @@ Console.WriteLine("sec | rendered | skipped | glass windows");
 var glasses = new Dictionary<nint, Glass>(); // by target hwnd
 var clock = Stopwatch.StartNew();
 long lastFind = -1000, lastFs = -1000;
+
+// --- screenshots: while Win+Shift+S / PrtScn is active the glass and the app windows become visible to capture ---
+// The glass is frozen first (it keeps its last render), then glass windows drop WDA_EXCLUDEFROMCAPTURE and the
+// Windhawk mod is told (named event) to do the same for the apps.
+var shotEvent = Native.CreateEventW(0, true, false, "Local\\GlassFollow.Screenshot");
+Native.ResetEvent(shotEvent); // a stale signalled event from a previous run must not leak in
+long shotStart = 0, shotPoll = 0, shotGone = -1;
+bool shotSeen = false;
+
+bool OverlayRunning()
+{
+    var ps = Process.GetProcessesByName("ScreenClippingHost"); // the Win+Shift+S selection overlay
+    bool running = ps.Length > 0;
+    foreach (var p in ps) p.Dispose();
+    return running;
+}
+
+void BeginShot()
+{
+    shotStart = clock.ElapsedMilliseconds;
+    if (st.Frozen) return; // pressed again: just extend
+    st.Frozen = true; shotSeen = false; shotGone = -1; shotPoll = 0;
+    Native.SetEvent(shotEvent);
+    foreach (var gl in st.Glasses) Native.SetWindowDisplayAffinity(gl.Hwnd, 0);
+    Console.WriteLine("screenshot: glass and apps are visible to capture");
+}
+
+void EndShot()
+{
+    foreach (var gl in st.Glasses) Native.SetWindowDisplayAffinity(gl.Hwnd, 0x11);
+    Native.ResetEvent(shotEvent);
+    st.Frozen = false;
+    foreach (var gl in st.Glasses) gl.NeedRender = true;
+    Console.WriteLine("screenshot done: glass resumed");
+}
+
+void UpdateShot()
+{
+    long now = clock.ElapsedMilliseconds;
+    if (now - shotPoll < 200) return;
+    shotPoll = now;
+    if (OverlayRunning()) { shotSeen = true; shotGone = -1; }
+    else if (shotSeen && shotGone < 0) shotGone = now;
+    bool end = now - shotStart > 30000                       // safety limit
+        || (!shotSeen && now - shotStart > 3000)             // PrtScn without the overlay
+        || (shotSeen && shotGone >= 0 && now - shotGone > 500); // overlay closed
+    if (end) EndShot();
+}
+
+nint kbHook = 0;
+Native.HookProc kbProc = (code, wParam, lParam) =>
+{
+    if (code >= 0 && (wParam == 0x100 || wParam == 0x104)) // WM_KEYDOWN / WM_SYSKEYDOWN
+    {
+        int vk = Marshal.ReadInt32(lParam);
+        bool win = (Native.GetAsyncKeyState(0x5B) & 0x8000) != 0 || (Native.GetAsyncKeyState(0x5C) & 0x8000) != 0;
+        bool shift = (Native.GetAsyncKeyState(0x10) & 0x8000) != 0;
+        if ((vk == 0x53 && win && shift) || vk == 0x2C) st.ShotRequested = true; // never swallow the key
+    }
+    return Native.CallNextHookEx(0, code, wParam, lParam);
+};
+if (!noShot) kbHook = Native.SetWindowsHookExW(13, kbProc, Native.GetModuleHandleW(null), 0); // WH_KEYBOARD_LL
 try { Console.CancelKeyPress += (_, e) => { e.Cancel = true; st.Run = false; }; } catch { } // no console when --hidden
 Native.timeBeginPeriod(1);
 var timer = new Timer(_ =>
@@ -401,6 +466,8 @@ var timer = new Timer(_ =>
 while (st.Run)
 {
     while (Native.PeekMessageW(out var msg, 0, 0, 0, 1)) { Native.TranslateMessage(ref msg); Native.DispatchMessageW(ref msg); }
+    if (st.ShotRequested) { st.ShotRequested = false; BeginShot(); }
+    if (st.Frozen) { UpdateShot(); Thread.Sleep(5); continue; } // glass stays exactly as it was
     if (clock.ElapsedMilliseconds - lastFs > 200)
     {
         lastFs = clock.ElapsedMilliseconds;
@@ -424,6 +491,8 @@ while (st.Run)
     Thread.Sleep(1);
 }
 timer.Dispose();
+if (kbHook != 0) Native.UnhookWindowsHookEx(kbHook);
+GC.KeepAlive(kbProc);
 foreach (var gl in glasses.Values) Native.ShowWindow(gl.Hwnd, 0);
 foreach (var m in mons) { m.Session?.Dispose(); m.Pool?.Dispose(); }
 
@@ -464,6 +533,8 @@ sealed class State
     public volatile Glass[] Glasses = [];
     public volatile bool Run = true;
     public volatile bool Paused; // a fullscreen app has focus: glass stays static
+    public volatile bool Frozen; // screenshot in progress: glass stays static and visible to capture
+    public volatile bool ShotRequested;
 }
 
 [StructLayout(LayoutKind.Sequential)]
@@ -480,6 +551,7 @@ static class Native
     public delegate nint WndProc(nint h, uint m, nint w, nint l);
     public delegate bool EnumProc(nint h, nint l);
     public delegate bool MonitorEnumProc(nint hMonitor, nint hdc, nint rect, nint data);
+    public delegate nint HookProc(int code, nint wParam, nint lParam);
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     public struct WNDCLASSEXW { public int cbSize; public uint style; public IntPtr lpfnWndProc; public int cbClsExtra, cbWndExtra; public nint hInstance, hIcon, hCursor, hbrBackground; public string? lpszMenuName; public string lpszClassName; public nint hIconSm; }
     public struct RECT { public int left, top, right, bottom; }
@@ -510,6 +582,14 @@ static class Native
     [DllImport("user32")] public static extern nint GetForegroundWindow();
     [DllImport("user32")] public static extern nint MonitorFromWindow(nint h, uint flags);
     [DllImport("user32")] public static extern bool GetWindowRect(nint h, out RECT r);
+    [DllImport("user32", CharSet = CharSet.Unicode)] public static extern nint SetWindowsHookExW(int id, HookProc proc, nint mod, uint thread);
+    [DllImport("user32")] public static extern bool UnhookWindowsHookEx(nint hook);
+    [DllImport("user32")] public static extern nint CallNextHookEx(nint hook, int code, nint wParam, nint lParam);
+    [DllImport("user32")] public static extern short GetAsyncKeyState(int vk);
+    [DllImport("kernel32", CharSet = CharSet.Unicode)] public static extern nint GetModuleHandleW(string? name);
+    [DllImport("kernel32", CharSet = CharSet.Unicode)] public static extern nint CreateEventW(nint attrs, bool manualReset, bool initial, string name);
+    [DllImport("kernel32")] public static extern bool SetEvent(nint h);
+    [DllImport("kernel32")] public static extern bool ResetEvent(nint h);
     [DllImport("user32")] public static extern nint GetWindow(nint h, uint cmd);
     [DllImport("user32")] public static extern int GetWindowLongW(nint h, int index);
     [DllImport("user32")] public static extern uint GetWindowThreadProcessId(nint h, out uint pid);

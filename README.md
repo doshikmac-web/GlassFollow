@@ -9,7 +9,8 @@ Windows Terminal, ...).
 
 > Русская версия: [README.ru.md](README.ru.md)
 
-![preview](docs/preview.png)
+<!-- Add a screenshot or GIF: docs/preview.png -->
+<!-- ![preview](docs/preview.png) -->
 
 ## How it works
 
@@ -58,6 +59,7 @@ GlassFollow.exe --list [--delay N]
 | `--fps N` | `200` | Frame cap. Set it to your monitor's refresh rate. |
 | `--pad N` | `16` | Margin around the window used for sampling. Raise it together with `--thick`. |
 | `--hidden` | off | Hide the console window (for autostart). |
+| `--no-shot` | off | Do not watch for Win+Shift+S / PrtScn (see [Screenshots](#screenshots)). |
 | `--list` | | Print visible windows (process, class, size, title) to build specs, then exit. |
 | `--delay N` | `0` | With `--list`: wait N seconds first, so you can open the window you need. |
 
@@ -102,12 +104,25 @@ Install: Windhawk → *Create a new mod* → paste the contents of `glass-prep.w
 Edit the `@include` lines to choose the apps (`zen.exe`, `explorer.exe`, `discord.exe`, `steamwebhelper.exe`,
 `Flow.Launcher.exe`, `WindowsTerminal.exe`, `conhost.exe`, `OpenConsole.exe` by default).
 
-Settings:
+Default settings (apply to every app):
 
 | Setting | Meaning |
 |---|---|
-| Hide windows from screen capture | Needed for clean glass. Also hides the windows from screenshots, recordings and screen sharing. |
+| Hide windows from screen capture | Needed for clean glass. Windows are hidden only while GlassFollow is running, and are visible during screenshots (see [Screenshots](#screenshots)). Screen recording and sharing still don't see them. |
 | Transparency method | `1` transparent accent (default), `2` accent + frame extended into client area, `3` backdrop "none" + frame extended. Try the next one if a window stays black or grey. |
+
+**Per-app settings** (mod settings → *Per-app settings* → add an item) override the defaults for one process:
+
+| Field | Meaning |
+|---|---|
+| Process name | For example `zen.exe`. Matched case-insensitively. |
+| Enabled | Turn the mod off for this app only. |
+| Hide from screen capture | Per-app override of the default above. |
+| Transparency method | Per-app override of the default above. |
+| Window classes | Comma-separated window classes to handle, a trailing `*` means prefix. Empty = every large window of the process (in `explorer.exe`: File Explorer windows and standard dialogs only). |
+
+The process must also be covered by the mod's include list (the `@include` lines, or *Advanced → custom process list*
+in the mod's settings).
 
 Notes:
 
@@ -117,6 +132,21 @@ Notes:
   wallpaper or taskbar.
 - The mod runs inside the target processes. Read the source before enabling it, and disable it first if an app
   misbehaves.
+
+## Screenshots
+
+Normally the glass and the app windows are hidden from capture, so a plain screenshot would show only the
+wallpaper. GlassFollow therefore watches for `Win+Shift+S` and `PrtScn`. When one is pressed, the glass is
+frozen (it keeps its last render), the glass windows become visible to capture, and the mod makes the app
+windows visible too. The screenshot then looks exactly like your screen. Everything goes back to normal when the
+selection overlay closes (at most 30 seconds, or 3 seconds if no overlay appears).
+
+- Works with the Windows screenshot tool. Screen recording, OBS and screen sharing still don't see the glass
+  windows and the apps.
+- Without the Windhawk mod only the glass windows become visible.
+- Use `--no-shot` to disable the key watching.
+- The screenshot is taken within a few tens of milliseconds after the key press. If an app occasionally
+  appears missing, take the screenshot again and let me know in an issue.
 
 ## Games and fullscreen apps
 
@@ -146,7 +176,7 @@ Remove it with `.\scripts\uninstall-autostart.ps1`. Keep the folder where it is:
 | App is black or grey instead of transparent | Switch the mod's transparency method (1 → 2 → 3), then restart the app. Make sure no other mod forces Mica/blur on it. |
 | No glass at all | The app is not transparent, or the spec does not match. Check `--list`. The console shows how many glass windows exist. |
 | Glass shows a "ghost" of the window itself | The mod is not active for that app, or "Hide windows from screen capture" is off. |
-| Window is missing from screenshots/recordings | By design while the mod's capture hiding is on. Turn it off for screenshots (the glass will then refract the window). |
+| Window is missing from screenshots | Win+Shift+S and PrtScn should include it, see [Screenshots](#screenshots). If not, or for recordings and screen sharing: by design while capture hiding is on. |
 | Edge refraction is too thin or cut off | Raise `--thick` and `--pad`. |
 | Shader tweaks | Edit `liquid-glass.hlsl` next to the exe while it runs; it reloads automatically. |
 
@@ -158,7 +188,7 @@ Remove it with `.\scripts\uninstall-autostart.ps1`. Keep the folder where it is:
   another shows the desktop behind both.
 - A window spanning two monitors refracts from the monitor that holds its centre.
 - Every app needs its own transparency setup. App updates can change window classes or break transparency.
-- Windows hidden from capture disappear from screen sharing and recording while the mod is on.
+- Windows hidden from capture disappear from screen sharing and recording while GlassFollow is running (screenshots with Win+Shift+S / PrtScn are handled).
 - Binaries are unsigned, so SmartScreen may warn.
 
 ## Build from source
