@@ -4,6 +4,7 @@
 //
 // Usage: GlassFollow.exe [--corner 22] [--thick 36] [--fps 200] [--pad 16] <spec> [<spec> ...]
 //        --hidden hides the console window (autostart); --no-shot ignores Win+Shift+S / PrtScn
+//        --setup opens the interactive autostart setup (scripts\setup.ps1)
 //        GlassFollow.exe --list            (prints visible windows: process / class / size / title, to build specs)
 //   spec = process[:WindowClass[:TitleSubstring]]   (process without .exe)
 //   process may be * (any process), class may end with * (prefix match)
@@ -26,7 +27,7 @@ using WinRT;
 var inv = CultureInfo.InvariantCulture;
 float cornerArg = 22f, thickArg = 36f, padArg = 16f;
 int fpsCap = 200, delaySec = 0;
-bool listMode = false, hidden = false, noShot = false;
+bool listMode = false, hidden = false, noShot = false, setup = false;
 var specs = new List<Spec>();
 for (int i = 0; i < args.Length; i++)
 {
@@ -34,6 +35,7 @@ for (int i = 0; i < args.Length; i++)
     if (a == "--list") { listMode = true; continue; }
     if (a == "--hidden") { hidden = true; continue; } // no console window (for autostart)
     if (a == "--no-shot") { noShot = true; continue; } // do not watch for Win+Shift+S / PrtScn
+    if (a == "--setup") { setup = true; continue; } // interactive autostart setup
     if (a.StartsWith("--") && i + 1 < args.Length)
     {
         string v = args[++i];
@@ -54,6 +56,15 @@ for (int i = 0; i < args.Length; i++)
             p.Length > 1 && p[1].Length > 0 ? p[1] : null,
             p.Length > 2 && p[2].Length > 0 ? p[2] : null));
     }
+}
+
+if (setup)
+{
+    var script = Path.Combine(AppContext.BaseDirectory, "scripts", "setup.ps1");
+    if (!File.Exists(script)) { Console.WriteLine("scripts\\setup.ps1 not found next to the exe"); return; }
+    using var sp = Process.Start(new ProcessStartInfo("powershell.exe", $"-NoProfile -ExecutionPolicy Bypass -File \"{script}\"") { UseShellExecute = false });
+    sp?.WaitForExit();
+    return;
 }
 
 Native.SetProcessDpiAwarenessContext(-4);

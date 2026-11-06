@@ -24,7 +24,7 @@ jobs:
         shell: pwsh
         run: |
           Copy-Item windhawk, scripts -Destination dist/GlassFollow -Recurse
-          Copy-Item README.md, README.ru.md, LICENSE, THIRD_PARTY_NOTICES.md -Destination dist/GlassFollow
+          Copy-Item README.md, README.ru.md, LICENSE, THIRD_PARTY_NOTICES.md, GlassFollow-setup.cmd -Destination dist/GlassFollow
           Copy-Item third_party/correct-liquid-glass/LICENSE dist/GlassFollow/LICENSE.correct-liquid-glass
           Compress-Archive -Path dist/GlassFollow/* -DestinationPath "GlassFollow-${{ github.ref_name }}-win-x64.zip"
 

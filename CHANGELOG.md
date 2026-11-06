@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.2.0
+- Interactive autostart setup with an ASCII banner: `GlassFollow-setup.cmd` or `GlassFollow.exe --setup`. Guided flags or a hand-typed command line.
+
 ## 1.1.0
 - Screenshots: while Win+Shift+S or PrtScn is active, the glass is frozen and, together with the app windows,
   becomes visible to capture. `--no-shot` turns this off.

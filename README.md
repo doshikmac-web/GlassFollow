@@ -60,6 +60,7 @@ GlassFollow.exe --list [--delay N]
 | `--pad N` | `16` | Margin around the window used for sampling. Raise it together with `--thick`. |
 | `--hidden` | off | Hide the console window (for autostart). |
 | `--no-shot` | off | Do not watch for Win+Shift+S / PrtScn (see [Screenshots](#screenshots)). |
+| `--setup` | | Open the interactive autostart setup (see [Autostart](#autostart)), then exit. |
 | `--list` | | Print visible windows (process, class, size, title) to build specs, then exit. |
 | `--delay N` | `0` | With `--list`: wait N seconds first, so you can open the window you need. |
 
@@ -157,17 +158,27 @@ Normal maximized windows do not count. It resumes when the focus leaves. Do not 
 
 ## Autostart
 
-From the unpacked release folder:
+Double-click `GlassFollow-setup.cmd` in the release folder, or run `GlassFollow.exe --setup`. An interactive menu
+with an ASCII banner lets you:
+
+- pick apps from a preset list and add your own specs;
+- set every flag (`--corner`, `--thick`, `--fps`, `--pad`, `--no-shot`, anything else you append), or type the whole
+  command line yourself;
+- choose the delay after logon;
+- install, update or remove the autostart task, show the installed one, start or stop GlassFollow, and list windows.
+
+Your choices are remembered in `%APPDATA%\GlassFollow\autostart.json`. The task starts GlassFollow hidden
+(`--hidden`) after logon. Windows blocks `.ps1` files by default, so the `.cmd` launcher and `--setup` run the
+script with `-ExecutionPolicy Bypass` for this one script only.
+
+For automation there is also a non-interactive installer:
 
 ```powershell
-.\scripts\install-autostart.ps1
-# or with your own apps:
-.\scripts\install-autostart.ps1 -Arguments '--thick 60 zen discord "explorer:#32770"'
+powershell -ExecutionPolicy Bypass -File .\scripts\install-autostart.ps1 -Arguments '--thick 60 zen discord "explorer:#32770"'
 ```
 
-It registers a Task Scheduler task that starts GlassFollow hidden 15 seconds after logon.
-Remove it with `.\scripts\uninstall-autostart.ps1`. Keep the folder where it is: the task points to the exe
-(and `liquid-glass.hlsl` must stay next to it).
+Remove the task from the setup menu or with `scripts\uninstall-autostart.ps1`. Keep the folder where it is: the task
+points to the exe (and `liquid-glass.hlsl` must stay next to it).
 
 ## Troubleshooting
 

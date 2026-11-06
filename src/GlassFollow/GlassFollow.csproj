@@ -3,7 +3,7 @@
     <OutputType>Exe</OutputType>
     <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
     <AssemblyName>GlassFollow</AssemblyName>
-    <Version>1.1.0</Version>
+    <Version>1.2.0</Version>
     <Description>Liquid-glass refraction behind chosen windows on Windows 11</Description>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
