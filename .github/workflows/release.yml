@@ -1,0 +1,34 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Publish
+        run: dotnet publish src/GlassFollow/GlassFollow.csproj -c Release -r win-x64 --self-contained false -o dist/GlassFollow
+
+      - name: Package
+        shell: pwsh
+        run: |
+          Copy-Item windhawk, scripts -Destination dist/GlassFollow -Recurse
+          Copy-Item README.md, README.ru.md, LICENSE, THIRD_PARTY_NOTICES.md -Destination dist/GlassFollow
+          Copy-Item third_party/correct-liquid-glass/LICENSE dist/GlassFollow/LICENSE.correct-liquid-glass
+          Compress-Archive -Path dist/GlassFollow/* -DestinationPath "GlassFollow-${{ github.ref_name }}-win-x64.zip"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: GlassFollow-*.zip
+          generate_release_notes: true
