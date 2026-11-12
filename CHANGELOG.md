@@ -1,5 +1,22 @@
 # Changelog
 
+## 2.0.0
+- Second glass style, "uWidgets", next to the default one ("correct"). Choose it for all windows with
+  `--style uwidgets`, or per window with a `=uw` suffix on a spec (`zen=uw`, `"explorer:CabinetWClass=correct"`).
+  Both styles can be used at the same time.
+- Settings for the new style: `--uw-refraction`, `--uw-blur`, `--uw-theme`, `--uw-tint`, `--uw-rim`, `--uw-angle`,
+  `--uw-sheen`, `--uw-specular`.
+- The new shader is adapted from uWidgets and is licensed CC BY-NC-SA 4.0 (non-commercial), see
+  THIRD_PARTY_NOTICES.md. Without that file the program works as before and `--style uwidgets` falls back to the
+  default style.
+
+## 1.2.1
+- Fix: the glass no longer stays lost after sleep, the lock screen or a screensaver. The capture is rebuilt on
+  resume, display change and return of the desktop, and monitors are matched by position instead of handle.
+- Errors in capture or rendering no longer crash the program silently; it recovers, or restarts itself if the GPU
+  device was lost. Recovery events are logged to `%LOCALAPPDATA%\GlassFollow\glassfollow.log`.
+- The autostart task now restarts GlassFollow if it exits with a failure.
+
 ## 1.2.0
 - Interactive autostart setup with an ASCII banner: `GlassFollow-setup.cmd` or `GlassFollow.exe --setup`. Guided flags or a hand-typed command line.
 

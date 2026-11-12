@@ -26,6 +26,7 @@ jobs:
           Copy-Item windhawk, scripts -Destination dist/GlassFollow -Recurse
           Copy-Item README.md, README.ru.md, LICENSE, THIRD_PARTY_NOTICES.md, GlassFollow-setup.cmd -Destination dist/GlassFollow
           Copy-Item third_party/correct-liquid-glass/LICENSE dist/GlassFollow/LICENSE.correct-liquid-glass
+          if (Test-Path third_party/uwidgets/LICENSE) { Copy-Item third_party/uwidgets/LICENSE dist/GlassFollow/LICENSE.uwidgets-CC-BY-NC-SA-4.0 }
           Compress-Archive -Path dist/GlassFollow/* -DestinationPath "GlassFollow-${{ github.ref_name }}-win-x64.zip"
 
       - uses: softprops/action-gh-release@v2

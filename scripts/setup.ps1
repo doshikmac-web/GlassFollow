@@ -57,6 +57,11 @@ if ($ru) {
         started = 'GlassFollow запущен.'
         stoppedMsg = 'GlassFollow остановлен.'
         keep = 'Enter = оставить значение в скобках'
+        style = 'Стиль стекла по умолчанию: correct или uwidgets (--style)'
+        alt = 'Программы со ВТОРЫМ стилем (номера через запятую, "-" = нет)'
+        uwRefraction = 'Стиль uWidgets: сила преломления 0-100 (--uw-refraction)'
+        uwBlur = 'Стиль uWidgets: размытие 0-100 (--uw-blur)'
+        uwTheme = 'Стиль uWidgets: тема тонировки, dark или light (--uw-theme)'
     }
 } else {
     $T = @{
@@ -94,6 +99,11 @@ if ($ru) {
         started = 'GlassFollow started.'
         stoppedMsg = 'GlassFollow stopped.'
         keep = 'Enter = keep the value in brackets'
+        style = 'Default glass style: correct or uwidgets (--style)'
+        alt = 'Apps that use the OTHER style (numbers, comma separated, "-" = none)'
+        uwRefraction = 'uWidgets style: refraction strength 0-100 (--uw-refraction)'
+        uwBlur = 'uWidgets style: blur 0-100 (--uw-blur)'
+        uwTheme = 'uWidgets style: tint theme, dark or light (--uw-theme)'
     }
 }
 
@@ -111,6 +121,7 @@ $Presets = @(
 $cfg = [ordered]@{
     Presets = '1,2,3,4,6'; Custom = ''; Corner = '22'; Thick = '60'; Fps = '200'; Pad = '16'
     NoShot = $false; Extra = ''; Delay = '15'; Manual = ''
+    Style = 'correct'; Alt = ''; UwRefraction = '100'; UwBlur = '0'; UwTheme = 'dark'
 }
 if (Test-Path $ConfigFile) {
     try {
@@ -183,14 +194,33 @@ function Ask-YesNo([string]$label, [bool]$default) {
     return $v.Trim().ToLower().StartsWith('y') -or $v.Trim().ToLower().StartsWith('д')
 }
 
+function Ask-Choice([string]$label, $default, [string[]]$choices) {
+    while ($true) {
+        $v = (Ask $label $default).ToLower()
+        if ($v -eq 'uw') { $v = 'uwidgets' }
+        if ($choices -contains $v) { return $v }
+        Write-Host ('  ' + ($choices -join ' / ')) -ForegroundColor Yellow
+    }
+}
+
 function Build-Arguments {
-    $parts = @('--hidden', "--corner $($cfg.Corner)", "--thick $($cfg.Thick)", "--fps $($cfg.Fps)", "--pad $($cfg.Pad)")
+    $parts = @('--hidden', "--corner $($cfg.Corner)", "--thick $($cfg.Thick)", "--fps $($cfg.Fps)", "--pad $($cfg.Pad)", "--style $($cfg.Style)")
+    $alt = @("$($cfg.Alt)" -split '[,\s]+' | Where-Object { $_ -match '^\d+$' })
+    $other = 'uw'
+    if ($cfg.Style -eq 'uwidgets') { $other = 'correct' }
+    if ($cfg.Style -eq 'uwidgets' -or $alt.Count -gt 0) {
+        $parts += "--uw-refraction $($cfg.UwRefraction)", "--uw-blur $($cfg.UwBlur)", "--uw-theme $($cfg.UwTheme)"
+    }
     if ($cfg.NoShot) { $parts += '--no-shot' }
     if ($cfg.Extra) { $parts += $cfg.Extra }
     foreach ($n in ("$($cfg.Presets)" -split '[,\s]+')) {
         if ($n -match '^\d+$') {
             $i = [int]$n - 1
-            if ($i -ge 0 -and $i -lt $Presets.Count) { $parts += $Presets[$i].Spec }
+            if ($i -ge 0 -and $i -lt $Presets.Count) {
+                $spec = $Presets[$i].Spec
+                if ($alt -contains $n) { $spec = '"' + $spec.Trim('"') + '=' + $other + '"' }   # per-app style suffix
+                $parts += $spec
+            }
         }
     }
     if ($cfg.Custom) { $parts += $cfg.Custom }
@@ -201,7 +231,7 @@ function Install-GlassTask([string]$Arguments, [int]$Delay) {
     $action   = New-ScheduledTaskAction -Execute $Exe -Argument $Arguments -WorkingDirectory (Split-Path $Exe)
     $trigger  = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
     $trigger.Delay = "PT${Delay}S"   # let Explorer and Windhawk start first
-    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero)
+    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 5 -RestartInterval (New-TimeSpan -Minutes 1)
     Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Force | Out-Null
 }
 
@@ -227,6 +257,7 @@ function Confirm-And-Install([string]$Arguments) {
 function Invoke-Guided {
     Write-Host ''
     Write-Host $T.keep -ForegroundColor DarkGray
+    $cfg.Style = Ask-Choice $T.style $cfg.Style @('correct', 'uwidgets')
     Write-Host $T.appsTitle -ForegroundColor Cyan
     $selected = "$($cfg.Presets)" -split '[,\s]+'
     for ($i = 0; $i -lt $Presets.Count; $i++) {
@@ -237,11 +268,18 @@ function Invoke-Guided {
     $v = Ask $T.appsPrompt $cfg.Presets
     if ($v.Trim() -eq '0') { $v = '' }
     $cfg.Presets = $v
+    $cfg.Alt     = Ask $T.alt $cfg.Alt
     $cfg.Custom  = Ask $T.customPrompt $cfg.Custom
     $cfg.Corner  = Ask-Number $T.corner $cfg.Corner 0 500
     $cfg.Thick   = Ask-Number $T.thick  $cfg.Thick  1 2000
     $cfg.Fps     = Ask-Number $T.fps    $cfg.Fps    1 1000
     $cfg.Pad     = Ask-Number $T.pad    $cfg.Pad    0 500
+    $usesUw = ($cfg.Style -eq 'uwidgets') -or (@("$($cfg.Alt)" -split '[,\s]+' | Where-Object { $_ -match '^\d+$' }).Count -gt 0)
+    if ($usesUw) {
+        $cfg.UwRefraction = Ask-Number $T.uwRefraction $cfg.UwRefraction 0 100
+        $cfg.UwBlur       = Ask-Number $T.uwBlur       $cfg.UwBlur       0 100
+        $cfg.UwTheme      = Ask-Choice $T.uwTheme      $cfg.UwTheme      @('dark', 'light')
+    }
     $cfg.NoShot  = Ask-YesNo $T.noShot ([bool]$cfg.NoShot)
     $cfg.Extra   = Ask $T.extra $cfg.Extra
     $cfg.Delay   = Ask-Number $T.delay $cfg.Delay 0 600

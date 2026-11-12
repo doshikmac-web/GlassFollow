@@ -26,8 +26,14 @@ using WinRT;
 
 var inv = CultureInfo.InvariantCulture;
 float cornerArg = 22f, thickArg = 36f, padArg = 16f;
+var style = GlassStyle.Correct; // default glass style; a spec can override it with a =uw / =correct suffix
+// settings of the second style (uWidgets); the tint defaults follow uWidgets' dark / light theme
+float uwRefraction = 100f, uwBlur = 0f, uwTint = -1f, uwRim = 0.54f, uwAngle = 87f, uwSheen = 0f, uwSpecular = 0f;
+bool uwDark = true;
 int fpsCap = 200, delaySec = 0;
 bool listMode = false, hidden = false, noShot = false, setup = false;
+int waitPid = 0, relaunchCount = 0;
+var origArgs = args;
 var specs = new List<Spec>();
 for (int i = 0; i < args.Length; i++)
 {
@@ -45,16 +51,32 @@ for (int i = 0; i < args.Length; i++)
             case "--thick": thickArg = float.Parse(v, inv); break;
             case "--fps": fpsCap = int.Parse(v, inv); break;
             case "--pad": padArg = float.Parse(v, inv); break;
+            case "--style": style = Util.ParseStyle(v) ?? GlassStyle.Correct; break;
+            case "--uw-refraction": uwRefraction = float.Parse(v, inv); break; // 0..100
+            case "--uw-blur": uwBlur = float.Parse(v, inv); break;             // 0..100
+            case "--uw-tint": uwTint = float.Parse(v, inv); break;             // 0..1, default 0.20 dark / 0.10 light
+            case "--uw-theme": uwDark = !v.StartsWith("l", StringComparison.OrdinalIgnoreCase); break;
+            case "--uw-rim": uwRim = float.Parse(v, inv); break;
+            case "--uw-angle": uwAngle = float.Parse(v, inv); break;
+            case "--uw-sheen": uwSheen = float.Parse(v, inv); break;
+            case "--uw-specular": uwSpecular = float.Parse(v, inv); break;
             case "--delay": delaySec = int.Parse(v, inv); break;
+            case "--wait-pid": waitPid = int.Parse(v, inv); break;      // internal: set by an automatic restart
+            case "--relaunch": relaunchCount = int.Parse(v, inv); break; // internal: quick-restart counter
             default: Console.WriteLine($"unknown option {a}"); return;
         }
     }
     else
     {
-        var p = a.Split(':', 3);
+        GlassStyle? specStyle = null;
+        string body = a;
+        int eq = a.LastIndexOf('=');
+        if (eq > 0 && Util.ParseStyle(a[(eq + 1)..]) is { } parsed) { specStyle = parsed; body = a[..eq]; } // zen=uw
+        var p = body.Split(':', 3);
         specs.Add(new Spec(p[0].Replace(".exe", "", StringComparison.OrdinalIgnoreCase),
             p.Length > 1 && p[1].Length > 0 ? p[1] : null,
-            p.Length > 2 && p[2].Length > 0 ? p[2] : null));
+            p.Length > 2 && p[2].Length > 0 ? p[2] : null,
+            specStyle));
     }
 }
 
@@ -69,6 +91,49 @@ if (setup)
 
 Native.SetProcessDpiAwarenessContext(-4);
 if (hidden && !listMode) Native.FreeConsole();
+
+// small log for recovery events (the console is gone when running hidden): %LOCALAPPDATA%\GlassFollow\glassfollow.log
+string logPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "GlassFollow", "glassfollow.log");
+void Log(string text)
+{
+    try { Console.WriteLine(text); } catch { }
+    try
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(logPath)!);
+        if (File.Exists(logPath) && new FileInfo(logPath).Length > 200_000) File.Delete(logPath);
+        File.AppendAllText(logPath, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} {text}{Environment.NewLine}");
+    }
+    catch { }
+}
+
+if (waitPid > 0) { try { using var wp = Process.GetProcessById(waitPid); wp.WaitForExit(8000); } catch { } }
+
+// Start a fresh copy of this program and exit (used when the GPU device is lost or the program is about to crash).
+void Relaunch(string reason)
+{
+    Log($"relaunching: {reason}");
+    try
+    {
+        var keep = new List<string>();
+        for (int i = 0; i < origArgs.Length; i++)
+        {
+            if (origArgs[i] is "--wait-pid" or "--relaunch") { i++; continue; }
+            keep.Add(origArgs[i]);
+        }
+        if (!keep.Contains("--hidden")) keep.Insert(0, "--hidden");
+        double up = (DateTime.Now - Process.GetCurrentProcess().StartTime).TotalSeconds;
+        int k = up > 60 ? 0 : relaunchCount + 1; // a long healthy run resets the crash-loop counter
+        if (k > 5) { Log("too many quick restarts, giving up"); Environment.Exit(1); }
+        var psi = new ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = AppContext.BaseDirectory };
+        foreach (var x in keep) psi.ArgumentList.Add(x);
+        psi.ArgumentList.Add("--wait-pid"); psi.ArgumentList.Add(Environment.ProcessId.ToString());
+        psi.ArgumentList.Add("--relaunch"); psi.ArgumentList.Add(k.ToString());
+        Process.Start(psi);
+    }
+    catch { Environment.Exit(1); }
+    Environment.Exit(0);
+}
+if (!listMode) AppDomain.CurrentDomain.UnhandledException += (_, e) => { Log($"unhandled exception: {e.ExceptionObject}"); Relaunch("unhandled exception"); };
 
 var names = new Dictionary<uint, string>();
 string ProcName(uint pid)
@@ -109,14 +174,19 @@ if (specs.Count == 0)
 float s = Native.GetDpiForSystem() / 96f;
 
 // --- monitors (virtual-screen coordinates, physical pixels) ---
-var mons = new List<Mon>();
-Native.EnumDisplayMonitors(0, 0, (hm, _, _, _) =>
+List<Mon> EnumMonitors()
 {
-    var mi = new Native.MONITORINFO { cbSize = Marshal.SizeOf<Native.MONITORINFO>() };
-    Native.GetMonitorInfoW(hm, ref mi);
-    mons.Add(new Mon { Handle = hm, X = mi.rcMonitor.left, Y = mi.rcMonitor.top, W = mi.rcMonitor.right - mi.rcMonitor.left, H = mi.rcMonitor.bottom - mi.rcMonitor.top });
-    return true;
-}, 0);
+    var list = new List<Mon>();
+    Native.EnumDisplayMonitors(0, 0, (hm, _, _, _) =>
+    {
+        var mi = new Native.MONITORINFO { cbSize = Marshal.SizeOf<Native.MONITORINFO>() };
+        Native.GetMonitorInfoW(hm, ref mi);
+        list.Add(new Mon { Handle = hm, X = mi.rcMonitor.left, Y = mi.rcMonitor.top, W = mi.rcMonitor.right - mi.rcMonitor.left, H = mi.rcMonitor.bottom - mi.rcMonitor.top });
+        return true;
+    }, 0);
+    return list;
+}
+var mons = EnumMonitors();
 
 int pad = (int)(padArg * s), M = pad; // padding around the app rect; M = extra texture rows below the window
 float corner = cornerArg * s, thick = thickArg * s;
@@ -124,7 +194,12 @@ var st = new State();
 long processed = 0, skipped = 0;
 
 // --- glass windows share one class ---
-Native.WndProc proc = (h, m, w, l) => Native.DefWindowProcW(h, m, w, l);
+Native.WndProc proc = (h, m, w, l) =>
+{
+    if (m == 0x218 && (w == 0x7 || w == 0x12)) st.Request("resume from sleep"); // WM_POWERBROADCAST: PBT_APMRESUMESUSPEND / PBT_APMRESUMEAUTOMATIC
+    else if (m == 0x7E) st.Request("display change");                          // WM_DISPLAYCHANGE
+    return Native.DefWindowProcW(h, m, w, l);
+};
 var wc = new Native.WNDCLASSEXW { cbSize = Marshal.SizeOf<Native.WNDCLASSEXW>(), lpfnWndProc = Marshal.GetFunctionPointerForDelegate(proc), lpszClassName = "GlassFollow" };
 Native.RegisterClassExW(ref wc);
 // invisible control window: the Windhawk mod looks for it to know that GlassFollow is running
@@ -143,6 +218,51 @@ var hlslPath = Path.Combine(AppContext.BaseDirectory, "liquid-glass.hlsl");
 string hlsl = File.ReadAllText(hlslPath);
 var vs = device.CreateVertexShader(Compiler.Compile(hlsl, "VS", "liquid-glass.hlsl", "vs_5_0").Span);
 var ps = device.CreatePixelShader(Compiler.Compile(hlsl, "PS", "liquid-glass.hlsl", "ps_5_0").Span);
+
+// second style (uWidgets): loaded only if some window asks for it; falls back to the default style when the file is missing
+bool needUw = style == GlassStyle.UWidgets || specs.Any(x => x.Style == GlassStyle.UWidgets);
+string uwPath = Path.Combine(AppContext.BaseDirectory, "liquid-glass-uwidgets.hlsl");
+ID3D11VertexShader? vsUw = null;
+ID3D11PixelShader? psUw = null, psBlur = null;
+bool uwOk = false;
+void LoadUw()
+{
+    string src = File.ReadAllText(uwPath);
+    var nvs = device.CreateVertexShader(Compiler.Compile(src, "VSScreen", "liquid-glass-uwidgets.hlsl", "vs_5_0").Span);
+    var nps = device.CreatePixelShader(Compiler.Compile(src, "PSGlass", "liquid-glass-uwidgets.hlsl", "ps_5_0").Span);
+    var npb = device.CreatePixelShader(Compiler.Compile(src, "PSBlur", "liquid-glass-uwidgets.hlsl", "ps_5_0").Span);
+    lock (ctx!) { vsUw?.Dispose(); psUw?.Dispose(); psBlur?.Dispose(); vsUw = nvs; psUw = nps; psBlur = npb; }
+}
+if (needUw)
+{
+    if (!File.Exists(uwPath)) Log("liquid-glass-uwidgets.hlsl not found next to the exe: the uWidgets style falls back to the default style");
+    else
+    {
+        try { LoadUw(); uwOk = true; }
+        catch (Exception e) { Log($"uWidgets shader failed to compile, using the default style: {e.Message}"); }
+    }
+}
+FileSystemWatcher? watcherUw = null;
+if (uwOk)
+{
+    watcherUw = new FileSystemWatcher(AppContext.BaseDirectory, "liquid-glass-uwidgets.hlsl") { NotifyFilter = NotifyFilters.LastWrite, EnableRaisingEvents = true };
+    watcherUw.Changed += (_, _) =>
+    {
+        try
+        {
+            Thread.Sleep(100);
+            LoadUw();
+            foreach (var gl in st.Glasses) gl.NeedRender = true;
+            Log("uWidgets shader reloaded");
+        }
+        catch (Exception e) { Log($"shader error: {e.Message}"); }
+    };
+}
+GlassStyle Resolve(GlassStyle? requested)
+{
+    var x = requested ?? style;
+    return x == GlassStyle.UWidgets && !uwOk ? GlassStyle.Correct : x;
+}
 
 // hot reload: edit liquid-glass.hlsl next to the exe
 var watcher = new FileSystemWatcher(AppContext.BaseDirectory, "liquid-glass.hlsl") { NotifyFilter = NotifyFilters.LastWrite, EnableRaisingEvents = true };
@@ -174,7 +294,25 @@ Cb MakeCb(Geo g)
     };
 }
 
-Glass CreateGlass(nint target)
+// uWidgets style: the same one shape, in uWidgets' own constant buffer layout (see liquid-glass-uwidgets.hlsl)
+CbUw MakeCbUw(Geo g)
+{
+    float tintAmount = uwTint >= 0 ? uwTint : (uwDark ? 0.20f : 0.10f);
+    var tint = uwDark ? new Vector4(28 / 255f, 28 / 255f, 32 / 255f, 1) : new Vector4(252 / 255f, 252 / 255f, 255 / 255f, 1);
+    return new CbUw
+    {
+        Widget = new Vector4(g.Pad, g.Pad, g.TW, g.TH),
+        Effect = new Vector4(1f, uwRefraction / 100f, tintAmount, 0),
+        Tint = tint,
+        Bounds = new Vector4(g.Radius, 0, 0, g.W - 1),
+        Bounds2 = new Vector4(g.H + g.M - 1, g.W, g.H + g.M, 0),
+        Rim = new Vector4(0.8f, 3.1f, 6.8f, uwRim),
+        Light = new Vector4(2.38f, uwSheen, uwSpecular, 4f),
+        Angle = new Vector4(uwAngle, 0, 0, 0),
+    };
+}
+
+Glass CreateGlass(nint target, GlassStyle gstyle)
 {
     // NOT topmost: it is stacked right under its target window
     var hw = Native.CreateWindowExW(0x80 | 0x08000000, "GlassFollow", "GlassFollow", unchecked((int)0x80000000), 0, 0, 64, 64, 0, 0, 0, 0);
@@ -187,8 +325,9 @@ Glass CreateGlass(nint target)
             BufferUsage = Usage.RenderTargetOutput, SampleDescription = new(1, 0),
             SwapEffect = SwapEffect.FlipDiscard, Scaling = Scaling.Stretch, AlphaMode = Vortice.DXGI.AlphaMode.Ignore,
         });
-        var cbuf = device.CreateBuffer(new BufferDescription((uint)Marshal.SizeOf<Cb>(), BindFlags.ConstantBuffer));
-        return new Glass { Hwnd = hw, Target = target, Swap = sw, Cb = cbuf };
+        uint cbSize = gstyle == GlassStyle.UWidgets ? (uint)Marshal.SizeOf<CbUw>() : (uint)Marshal.SizeOf<Cb>();
+        var cbuf = device.CreateBuffer(new BufferDescription(cbSize, BindFlags.ConstantBuffer));
+        return new Glass { Hwnd = hw, Target = target, Swap = sw, Cb = cbuf, Style = gstyle };
     }
 }
 
@@ -198,6 +337,7 @@ void DestroyGlass(Glass gl)
     {
         gl.Dead = true;
         gl.Srv?.Dispose(); gl.Strip?.Dispose(); gl.Cb.Dispose(); gl.Swap.Dispose();
+        gl.BlurASrv?.Dispose(); gl.BlurBSrv?.Dispose(); gl.BlurA?.Dispose(); gl.BlurB?.Dispose(); gl.BlurCbH?.Dispose(); gl.BlurCbV?.Dispose();
     }
     Native.DestroyWindow(gl.Hwnd);
 }
@@ -209,11 +349,50 @@ void ApplyRegion(nint hw, Geo g) // the window only exists inside the rounded re
     Native.SetWindowRgn(hw, rgn, true); // the system owns rgn now
 }
 
+// uWidgets style: optional separable gaussian blur of the backdrop slice, then the glass pass
+void DrawUw(Glass gl, Geo g, float blurPx)
+{
+    ctx!.IASetPrimitiveTopology(PrimitiveTopology.TriangleList);
+    ctx.VSSetShader(vsUw);
+    ctx.PSSetSampler(0, sampler);
+    var source = gl.Srv!;
+    if (blurPx >= 0.05f && gl.BlurA is not null && gl.BlurB is not null && gl.BlurASrv is not null && gl.BlurBSrv is not null)
+    {
+        ctx.RSSetViewport(new Viewport(g.W, g.H + g.M));
+        ctx.PSSetShader(psBlur);
+        using (var rA = device.CreateRenderTargetView(gl.BlurA))
+        {
+            ctx.OMSetRenderTargets(rA);
+            ctx.PSSetShaderResource(0, gl.Srv); ctx.PSSetConstantBuffer(1, gl.BlurCbH!);
+            ctx.Draw(3, 0);
+        }
+        ctx.PSSetShaderResource(0, (ID3D11ShaderResourceView?)null);
+        using (var rB = device.CreateRenderTargetView(gl.BlurB))
+        {
+            ctx.OMSetRenderTargets(rB);
+            ctx.PSSetShaderResource(0, gl.BlurASrv); ctx.PSSetConstantBuffer(1, gl.BlurCbV!);
+            ctx.Draw(3, 0);
+        }
+        ctx.PSSetShaderResource(0, (ID3D11ShaderResourceView?)null);
+        source = gl.BlurBSrv;
+    }
+    using var back = gl.Swap.GetBuffer<ID3D11Texture2D>(0);
+    using var rtv = device.CreateRenderTargetView(back);
+    ctx.OMSetRenderTargets(rtv);
+    ctx.RSSetViewport(new Viewport(g.W, g.H));
+    ctx.PSSetShader(psUw);
+    ctx.PSSetShaderResource(0, source); ctx.PSSetConstantBuffer(0, gl.Cb);
+    ctx.Draw(3, 0);
+    ctx.PSSetShaderResource(0, (ID3D11ShaderResourceView?)null);
+}
+
 void Render(Glass gl)
 {
     var g = gl.Cur;
     if (g is null) return;
     var mon = mons[g.Mon];
+    bool uw = gl.Style == GlassStyle.UWidgets;
+    float blurPx = uw ? uwBlur / 100f * 36f : 0f; // same radius scale as uWidgets
     lock (ctx!)
     {
         if (gl.Dead) return;
@@ -226,9 +405,34 @@ void Render(Glass gl)
                 gl.Swap.ResizeBuffers(0, (uint)g.W, (uint)g.H, Format.Unknown, SwapChainFlags.None);
                 gl.Strip = device.CreateTexture2D(new Texture2DDescription(Format.B8G8R8A8_UNorm, (uint)g.W, (uint)(g.H + g.M), 1, 1, BindFlags.ShaderResource));
                 gl.Srv = device.CreateShaderResourceView(gl.Strip);
+                if (uw && blurPx >= 0.05f)
+                {
+                    gl.BlurASrv?.Dispose(); gl.BlurBSrv?.Dispose(); gl.BlurA?.Dispose(); gl.BlurB?.Dispose(); gl.BlurCbH?.Dispose(); gl.BlurCbV?.Dispose();
+                    var bd = new Texture2DDescription(Format.B8G8R8A8_UNorm, (uint)g.W, (uint)(g.H + g.M), 1, 1, BindFlags.ShaderResource | BindFlags.RenderTarget);
+                    gl.BlurA = device.CreateTexture2D(bd); gl.BlurB = device.CreateTexture2D(bd);
+                    gl.BlurASrv = device.CreateShaderResourceView(gl.BlurA); gl.BlurBSrv = device.CreateShaderResourceView(gl.BlurB);
+                    gl.BlurCbH = device.CreateBuffer(new BufferDescription((uint)Marshal.SizeOf<CbBlur>(), BindFlags.ConstantBuffer));
+                    gl.BlurCbV = device.CreateBuffer(new BufferDescription((uint)Marshal.SizeOf<CbBlur>(), BindFlags.ConstantBuffer));
+                }
             }
-            var cbData = MakeCb(g);
-            ctx.UpdateSubresource(in cbData, gl.Cb);
+            if (uw)
+            {
+                var cbU = MakeCbUw(g);
+                ctx.UpdateSubresource(in cbU, gl.Cb);
+                if (blurPx >= 0.05f && gl.BlurCbH is not null && gl.BlurCbV is not null)
+                {
+                    var size = new Vector4(g.W, g.H + g.M, 0, 0);
+                    var bh = new CbBlur { Params = new Vector4(blurPx, 1, 0, 0), Size = size };
+                    var bv = new CbBlur { Params = new Vector4(blurPx, 0, 1, 0), Size = size };
+                    ctx.UpdateSubresource(in bh, gl.BlurCbH);
+                    ctx.UpdateSubresource(in bv, gl.BlurCbV);
+                }
+            }
+            else
+            {
+                var cbData = MakeCb(g);
+                ctx.UpdateSubresource(in cbData, gl.Cb);
+            }
         }
         gl.Applied = g;
         // slice of the monitor frame under the window (clamped to that monitor; the shader samples it with window-local coords)
@@ -236,14 +440,21 @@ void Render(Glass gl)
         int l = Math.Max(0, sx), t = Math.Max(0, sy), r = Math.Min(mon.W, sx + g.W), b = Math.Min(mon.H, sy + g.H + g.M);
         if (r <= l || b <= t || gl.Strip is null || gl.Srv is null || mon.Tex is null) return;
         ctx.CopySubresourceRegion(gl.Strip, 0, (uint)(l - sx), (uint)(t - sy), 0, mon.Tex, 0, new Box(l, t, 0, r, b, 1));
-        using var back = gl.Swap.GetBuffer<ID3D11Texture2D>(0);
-        using var rtv = device.CreateRenderTargetView(back);
-        ctx.OMSetRenderTargets(rtv);
-        ctx.RSSetViewport(new Viewport(g.W, g.H));
-        ctx.IASetPrimitiveTopology(PrimitiveTopology.TriangleList);
-        ctx.VSSetShader(vs); ctx.PSSetShader(ps);
-        ctx.PSSetShaderResource(0, gl.Srv); ctx.PSSetSampler(0, sampler); ctx.PSSetConstantBuffer(0, gl.Cb);
-        ctx.Draw(3, 0);
+        if (uw)
+        {
+            DrawUw(gl, g, blurPx);
+        }
+        else
+        {
+            using var back = gl.Swap.GetBuffer<ID3D11Texture2D>(0);
+            using var rtv = device.CreateRenderTargetView(back);
+            ctx.OMSetRenderTargets(rtv);
+            ctx.RSSetViewport(new Viewport(g.W, g.H));
+            ctx.IASetPrimitiveTopology(PrimitiveTopology.TriangleList);
+            ctx.VSSetShader(vs); ctx.PSSetShader(ps);
+            ctx.PSSetShaderResource(0, gl.Srv); ctx.PSSetSampler(0, sampler); ctx.PSSetConstantBuffer(0, gl.Cb);
+            ctx.Draw(3, 0);
+        }
         gl.Swap.Present(0, PresentFlags.None);
     }
 }
@@ -256,9 +467,22 @@ var itemIid = new Guid("79C3F95B-31F7-4EC2-A464-632EF5D30760");
 var texIid = typeof(ID3D11Texture2D).GUID;
 try { await GraphicsCaptureAccess.RequestAccessAsync(GraphicsCaptureAccessKind.Borderless); } catch (Exception e) { Console.WriteLine($"borderless access: {e.Message}"); }
 
+long lastErrorRestart = -100000;
+void HandleError(Exception ex)
+{
+    if (st.Resetting) return;
+    int hr = ex.HResult;
+    if (hr == unchecked((int)0x887A0005) || hr == unchecked((int)0x887A0006) || hr == unchecked((int)0x887A0007)) Relaunch("GPU device lost");
+    if (Environment.TickCount64 - lastErrorRestart < 10000) return;
+    lastErrorRestart = Environment.TickCount64;
+    Log($"error: {ex.GetType().Name}: {ex.Message}");
+    st.Request("error");
+}
+
 void StartMon(Mon m)
 {
     var item = GraphicsCaptureItem.FromAbi(interop.CreateForMonitor(m.Handle, in itemIid));
+    item.Closed += (_, _) => { if (!st.Resetting) st.Request("capture item closed"); };
     var pool = Direct3D11CaptureFramePool.CreateFreeThreaded(winrtDevice, DirectXPixelFormat.B8G8R8A8UIntNormalized, 2, item.Size);
     var session = pool.CreateCaptureSession(item);
     session.IsCursorCaptureEnabled = false;
@@ -268,6 +492,9 @@ void StartMon(Mon m)
     session.DirtyRegionMode = GraphicsCaptureDirtyRegionMode.ReportOnly;
     pool.FrameArrived += (sender, _) =>
     {
+        try
+        {
+        if (st.Resetting) return;
         using var frame = sender.TryGetNextFrame();
         if (frame is null || st.Paused || st.Frozen) return; // paused (fullscreen app) or screenshot: no copies, no rendering
         using var tex = new ID3D11Texture2D(frame.Surface.As<IDirect3DDxgiInterfaceAccess>().GetInterface(in texIid));
@@ -288,17 +515,64 @@ void StartMon(Mon m)
             Render(gl);
             Interlocked.Increment(ref processed);
         }
+        }
+        catch (Exception ex) { HandleError(ex); }
     };
     session.StartCapture();
     m.Pool = pool; m.Session = session;
 }
 foreach (var m in mons) StartMon(m);
 
+// Rebuild the capture sessions and the monitor list (after sleep, lock screen / screensaver, display changes).
+// The glass windows and the D3D device stay as they are.
+void RestartCapture(string reason)
+{
+    Log($"restarting capture: {reason}");
+    st.Resetting = true;
+    try
+    {
+        foreach (var gl in st.Glasses) gl.Cur = null;
+        foreach (var m in mons)
+        {
+            try { m.Session?.Dispose(); } catch { }
+            try { m.Pool?.Dispose(); } catch { }
+        }
+        Thread.Sleep(100); // let running callbacks drain
+        lock (ctx!)
+        {
+            foreach (var m in mons) { try { m.Tex?.Dispose(); } catch { } }
+            mons.Clear();
+            mons.AddRange(EnumMonitors());
+            foreach (var m in mons)
+                m.Tex = device.CreateTexture2D(new Texture2DDescription(Format.B8G8R8A8_UNorm, (uint)m.W, (uint)m.H, 1, 1, BindFlags.None));
+        }
+        foreach (var m in mons) StartMon(m);
+        foreach (var gl in st.Glasses) gl.NeedRender = true;
+        Log("capture restarted: " + string.Join(", ", mons.Select(x => $"{x.W}x{x.H}@{x.X},{x.Y}")));
+    }
+    catch (Exception ex)
+    {
+        Log($"capture restart failed: {ex.Message}");
+        st.Request("retry", 3000);
+    }
+    finally { st.Resetting = false; }
+}
+
+// false while the secure desktop (lock screen, screensaver with sign-in) has the input
+bool InputDesktopAccessible()
+{
+    var d = Native.OpenInputDesktop(0, false, 0x0001); // DESKTOP_READOBJECTS
+    if (d == 0) return false;
+    Native.CloseDesktop(d);
+    return true;
+}
+bool lastInputOk = true;
+
 // --- find + follow the target windows ---
 var sbf = new StringBuilder(256);
-List<nint> FindTargets()
+List<(nint Hwnd, GlassStyle Style)> FindTargets()
 {
-    var res = new List<nint>();
+    var res = new List<(nint Hwnd, GlassStyle Style)>();
     Native.EnumWindows((h, _) =>
     {
         if (!Native.IsWindowVisible(h) || Native.IsIconic(h)) return true; // skip hidden, minimized
@@ -326,7 +600,7 @@ List<nint> FindTargets()
             }
             if (Native.DwmGetWindowAttribute(h, 9, out Native.RECT r, Marshal.SizeOf<Native.RECT>()) != 0) continue;
             if (r.right - r.left < (strict ? 200 : 100) || r.bottom - r.top < (strict ? 150 : 30)) continue;
-            res.Add(h);
+            res.Add((h, Resolve(sp.Style)));
             break;
         }
         return true;
@@ -341,8 +615,8 @@ Geo? Compute(nint t)
     int tw = r.right - r.left, th = r.bottom - r.top;
     if (tw < 50 || th < 30) return null;
     // the monitor that holds the window's centre is the one we refract from
-    var hm = Native.MonitorFromPoint(new System.Drawing.Point((r.left + r.right) / 2, (r.top + r.bottom) / 2), 2);
-    int mIdx = mons.FindIndex(x => x.Handle == hm);
+    int cx = (r.left + r.right) / 2, cy = (r.top + r.bottom) / 2;
+    int mIdx = mons.FindIndex(x => cx >= x.X && cx < x.X + x.W && cy >= x.Y && cy < x.Y + x.H);
     if (mIdx < 0) return null;
     return new Geo(r.left - pad, r.top - pad, tw, th, pad, M, Native.IsZoomed(t) ? 0 : corner, thick, mIdx);
 }
@@ -391,13 +665,13 @@ void SetPaused(bool paused)
 {
     st.Paused = paused;
     foreach (var m in mons) // while paused the capture only ticks once a second, so it barely costs the game anything
-        if (m.Session is not null) m.Session.MinUpdateInterval = paused ? TimeSpan.FromSeconds(1) : TimeSpan.FromSeconds(0.5 / fpsCap);
+        if (m.Session is not null) { try { m.Session.MinUpdateInterval = paused ? TimeSpan.FromSeconds(1) : TimeSpan.FromSeconds(0.5 / fpsCap); } catch { st.Request("capture session unusable"); } }
     if (!paused) foreach (var gl in st.Glasses) gl.NeedRender = true;
-    Console.WriteLine(paused ? "fullscreen app in focus: glass paused (static)" : "glass resumed");
+    Log(paused ? "fullscreen app in focus: glass paused (static)" : "glass resumed");
 }
 
-Console.WriteLine($"cap {fpsCap} fps, corner {cornerArg}, thick {thickArg}, pad {padArg}; monitors: " + string.Join(", ", mons.Select(x => $"{x.W}x{x.H}@{x.X},{x.Y}")));
-Console.WriteLine("targets: " + string.Join(", ", specs.Select(x => x.Proc + (x.Cls is null ? "" : ":" + x.Cls) + (x.Title is null ? "" : ":" + x.Title))) + ". Ctrl+C to stop.");
+Console.WriteLine($"cap {fpsCap} fps, corner {cornerArg}, thick {thickArg}, pad {padArg}, style {style}{(uwOk ? " (uWidgets style available)" : "")}; monitors: " + string.Join(", ", mons.Select(x => $"{x.W}x{x.H}@{x.X},{x.Y}")));
+Console.WriteLine("targets: " + string.Join(", ", specs.Select(x => x.Proc + (x.Cls is null ? "" : ":" + x.Cls) + (x.Title is null ? "" : ":" + x.Title) + (x.Style is null ? "" : "=" + x.Style))) + ". Ctrl+C to stop.");
 Console.WriteLine("sec | rendered | skipped | glass windows");
 
 var glasses = new Dictionary<nint, Glass>(); // by target hwnd
@@ -477,22 +751,28 @@ var timer = new Timer(_ =>
 while (st.Run)
 {
     while (Native.PeekMessageW(out var msg, 0, 0, 0, 1)) { Native.TranslateMessage(ref msg); Native.DispatchMessageW(ref msg); }
+    try
+    {
     if (st.ShotRequested) { st.ShotRequested = false; BeginShot(); }
     if (st.Frozen) { UpdateShot(); Thread.Sleep(5); continue; } // glass stays exactly as it was
     if (clock.ElapsedMilliseconds - lastFs > 200)
     {
         lastFs = clock.ElapsedMilliseconds;
+        bool inputOk = InputDesktopAccessible();
+        if (inputOk && !lastInputOk) st.Request("desktop returned (lock screen / screensaver)");
+        lastInputOk = inputOk;
         bool fs = IsFullscreenForeground();
         if (fs != st.Paused) SetPaused(fs);
     }
+    if (st.RestartRequested && !st.Paused && Environment.TickCount64 >= st.RestartAt) { st.RestartRequested = false; RestartCapture(st.Reason); }
     if (st.Paused) { Thread.Sleep(50); continue; } // glass windows stay exactly as they were
     if (clock.ElapsedMilliseconds - lastFind > 100)
     {
         lastFind = clock.ElapsedMilliseconds;
         var found = FindTargets();
         bool changed = false;
-        foreach (var t in found)
-            if (!glasses.ContainsKey(t)) { glasses[t] = CreateGlass(t); changed = true; }
+        foreach (var (t, tStyle) in found)
+            if (!glasses.ContainsKey(t)) { glasses[t] = CreateGlass(t, tStyle); changed = true; }
         var gone = glasses.Where(kv => !Native.IsWindow(kv.Key)).ToList();
         foreach (var kv in gone) { glasses.Remove(kv.Key); changed = true; }
         if (changed) st.Glasses = glasses.Values.ToArray(); // publish first, then dispose the removed ones
@@ -500,6 +780,8 @@ while (st.Run)
     }
     foreach (var gl in glasses.Values) UpdateGlass(gl);
     Thread.Sleep(1);
+    }
+    catch (Exception ex) { HandleError(ex); Thread.Sleep(50); }
 }
 timer.Dispose();
 if (kbHook != 0) Native.UnhookWindowsHookEx(kbHook);
@@ -507,7 +789,20 @@ GC.KeepAlive(kbProc);
 foreach (var gl in glasses.Values) Native.ShowWindow(gl.Hwnd, 0);
 foreach (var m in mons) { m.Session?.Dispose(); m.Pool?.Dispose(); }
 
-sealed record Spec(string Proc, string? Cls, string? Title);
+enum GlassStyle { Correct, UWidgets }
+
+static class Util
+{
+    // "correct" (default style) / "uw" or "uwidgets" (second style); null = not a style name
+    public static GlassStyle? ParseStyle(string v) => v.ToLowerInvariant() switch
+    {
+        "correct" or "classic" or "default" => GlassStyle.Correct,
+        "uw" or "uwidgets" or "uwidget" => GlassStyle.UWidgets,
+        _ => null,
+    };
+}
+
+sealed record Spec(string Proc, string? Cls, string? Title, GlassStyle? Style = null);
 
 sealed class Mon
 {
@@ -525,6 +820,10 @@ sealed class Glass
     public ID3D11Buffer Cb = null!;
     public ID3D11Texture2D? Strip; // window-sized slice of a monitor frame (+M rows below), sampled by the shader
     public ID3D11ShaderResourceView? Srv;
+    public GlassStyle Style;
+    public ID3D11Texture2D? BlurA, BlurB; // uWidgets style, only with --uw-blur
+    public ID3D11ShaderResourceView? BlurASrv, BlurBSrv;
+    public ID3D11Buffer? BlurCbH, BlurCbV;
     public Geo? Applied;
     public volatile Geo? Cur;
     public volatile bool NeedRender = true;
@@ -546,7 +845,18 @@ sealed class State
     public volatile bool Paused; // a fullscreen app has focus: glass stays static
     public volatile bool Frozen; // screenshot in progress: glass stays static and visible to capture
     public volatile bool ShotRequested;
+    public volatile bool Resetting;        // capture is being rebuilt: callbacks do nothing
+    public volatile bool RestartRequested; // rebuild the capture once things have settled
+    public string Reason = "";
+    public long RestartAt;
+    public void Request(string reason, int delayMs = 1500) { Reason = reason; RestartAt = Environment.TickCount64 + delayMs; RestartRequested = true; }
 }
+
+[StructLayout(LayoutKind.Sequential)]
+struct CbUw { public Vector4 Widget, Effect, Tint, Bounds, Bounds2, Rim, Light, Angle; }
+
+[StructLayout(LayoutKind.Sequential)]
+struct CbBlur { public Vector4 Params, Size; }
 
 [StructLayout(LayoutKind.Sequential)]
 struct Cb { public Vector2 WinSize, TexSize; public Vector4 S0, S1, S2, S3, S4, S5, R0, R1, R2, R3, R4, R5, Flags; }
@@ -597,6 +907,8 @@ static class Native
     [DllImport("user32")] public static extern bool UnhookWindowsHookEx(nint hook);
     [DllImport("user32")] public static extern nint CallNextHookEx(nint hook, int code, nint wParam, nint lParam);
     [DllImport("user32")] public static extern short GetAsyncKeyState(int vk);
+    [DllImport("user32")] public static extern nint OpenInputDesktop(uint flags, bool inherit, uint access);
+    [DllImport("user32")] public static extern bool CloseDesktop(nint desktop);
     [DllImport("kernel32", CharSet = CharSet.Unicode)] public static extern nint GetModuleHandleW(string? name);
     [DllImport("kernel32", CharSet = CharSet.Unicode)] public static extern nint CreateEventW(nint attrs, bool manualReset, bool initial, string name);
     [DllImport("kernel32")] public static extern bool SetEvent(nint h);

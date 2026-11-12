@@ -15,8 +15,10 @@ Windows Terminal, ...).
 ## How it works
 
 1. The screen is captured with `Windows.Graphics.Capture` (one session per monitor, no cursor, no border).
-2. The pixel shader from [correct-liquid-glass](https://github.com/Shram1404/correct-liquid-glass) bends the
-   captured image around the window's edges (refraction, bevel, highlights).
+2. A pixel shader bends the captured image around the window's edges (refraction, bevel, highlights). There are two
+   glass styles to choose from, see [Glass styles](#glass-styles): the shader from
+   [correct-liquid-glass](https://github.com/Shram1404/correct-liquid-glass) and one adapted from
+   [uWidgets](https://github.com/creewick/uWidgets).
 3. The result is shown in a borderless window stacked **right below** the target window and cut to its
    rounded shape. For this to be visible the **target app must be transparent**.
 4. Glass windows are hidden from capture (`WDA_EXCLUDEFROMCAPTURE`), so glass never refracts itself.
@@ -58,6 +60,15 @@ GlassFollow.exe --list [--delay N]
 | `--thick N` | `36` | Edge thickness of the glass. Bigger = wider refraction zone. The author uses `180`. |
 | `--fps N` | `200` | Frame cap. Set it to your monitor's refresh rate. |
 | `--pad N` | `16` | Margin around the window used for sampling. Raise it together with `--thick`. |
+| `--style S` | `correct` | Glass style for all windows: `correct` or `uwidgets` (`uw`). See [Glass styles](#glass-styles). |
+| `--uw-refraction N` | `100` | uWidgets style: refraction strength, 0 to 100. |
+| `--uw-blur N` | `0` | uWidgets style: backdrop blur, 0 to 100 (up to a 36 px radius). |
+| `--uw-theme T` | `dark` | uWidgets style: `dark` or `light`, picks the tint colour and amount the way uWidgets does. |
+| `--uw-tint N` | `0.20` dark, `0.10` light | uWidgets style: tint amount, 0 to 1. |
+| `--uw-rim N` | `0.54` | uWidgets style: rim light intensity. |
+| `--uw-angle N` | `87` | uWidgets style: light direction in degrees. |
+| `--uw-sheen N` | `0` | uWidgets style: broad sheen over the glass. |
+| `--uw-specular N` | `0` | uWidgets style: specular highlight. |
 | `--hidden` | off | Hide the console window (for autostart). |
 | `--no-shot` | off | Do not watch for Win+Shift+S / PrtScn (see [Screenshots](#screenshots)). |
 | `--setup` | | Open the interactive autostart setup (see [Autostart](#autostart)), then exit. |
@@ -75,6 +86,8 @@ process[:WindowClass[:TitleSubstring]]
 - A bare `process` only matches normal top-level windows. If you give a class or title, owned windows
   (dialogs), tool windows and thin windows (like launchers) are allowed too.
 - Quote specs that contain `#` or `*`.
+- Add `=uw` or `=correct` at the end of a spec to choose the glass style for that window only, for example
+  `zen=uw` or `"explorer:CabinetWClass=correct"`. Without a suffix the window uses `--style`.
 
 Specs that worked for the author:
 
@@ -91,6 +104,36 @@ Specs that worked for the author:
 
 Class names can differ between app versions. If an app is not picked up, run `GlassFollow.exe --list` and use
 the values it prints.
+
+## Glass styles
+
+GlassFollow has two glass styles, and both can be used at the same time.
+
+| Style | Name | Look |
+|---|---|---|
+| Default | `correct` | The refraction shader from correct-liquid-glass. The width of the edge zone is `--thick`. |
+| uWidgets | `uwidgets` or `uw` | The lens, rim light, tint and optional blur from uWidgets. Strength is set by the `--uw-*` options. |
+
+Choose the style for all windows with `--style`, and override it per window with a suffix on the spec:
+
+```powershell
+.\GlassFollow.exe --style correct zen=uw explorer:CabinetWClass discord
+```
+
+Here Zen uses the uWidgets style and everything else the default one.
+
+Notes:
+
+- `--corner`, `--pad` and `--fps` apply to both styles. `--thick` only affects the default style, and the `--uw-*`
+  options only affect the uWidgets style.
+- The uWidgets shader was designed for small widgets. Its refraction zone scales with the smaller side of the
+  window, so on large windows the distortion can be strong. Lower `--uw-refraction` (for example to 30-60) to
+  soften it.
+- `--uw-blur` adds two blur passes per window, so keep it at 0 unless you want frosted glass.
+- Both shaders are plain text files next to the exe (`liquid-glass.hlsl`, `liquid-glass-uwidgets.hlsl`) and reload
+  while the program runs.
+- The uWidgets shader file is licensed **CC BY-NC-SA 4.0 (non-commercial)**, see [License](#credits-and-license).
+  If `liquid-glass-uwidgets.hlsl` is missing, `--style uwidgets` falls back to the default style.
 
 ## Windhawk mod
 
@@ -189,6 +232,7 @@ points to the exe (and `liquid-glass.hlsl` must stay next to it).
 | Glass shows a "ghost" of the window itself | The mod is not active for that app, or "Hide windows from screen capture" is off. |
 | Window is missing from screenshots | Win+Shift+S and PrtScn should include it, see [Screenshots](#screenshots). If not, or for recordings and screen sharing: by design while capture hiding is on. |
 | Edge refraction is too thin or cut off | Raise `--thick` and `--pad`. |
+| Glass is gone after sleep / lock screen / screensaver | Since 1.2.1 the capture restarts by itself a moment after the desktop returns. If it still doesn't come back, restart GlassFollow and send `%LOCALAPPDATA%\GlassFollow\glassfollow.log` in an issue. |
 | Shader tweaks | Edit `liquid-glass.hlsl` next to the exe while it runs; it reloads automatically. |
 
 ## Limitations
@@ -220,8 +264,15 @@ Pushing a tag like `v1.0.0` builds a release zip with GitHub Actions (`.github/w
 
 - Refraction shader and the capture approach: [correct-liquid-glass](https://github.com/Shram1404/correct-liquid-glass)
   by Shram1404 (MIT).
+- Second glass style: adapted from the liquid-glass shaders in [uWidgets](https://github.com/creewick/uWidgets)
+  by creewick (CC BY-NC-SA 4.0). Its edge lighting is ported from
+  [ryohsuke1231/liquid-glass](https://github.com/ryohsuke1231/liquid-glass) (MIT).
 - Direct3D bindings: [Vortice.Windows](https://github.com/amerkoleci/Vortice.Windows) (MIT).
 - Mod platform: [Windhawk](https://windhawk.net). This project is not affiliated with it.
 
 GlassFollow is released under the MIT license, see [LICENSE](LICENSE) and
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), with one exception:
+`third_party/uwidgets/liquid-glass-uwidgets.hlsl` (the uWidgets glass style) is adapted from uWidgets and licensed
+**CC BY-NC-SA 4.0**. It may be used and shared for non-commercial purposes only, and adaptations of it must keep
+that license. The release zip contains this file, so treat the zip as non-commercial. Without that file (delete it,
+or build without it) GlassFollow is MIT only.
