@@ -1,5 +1,8 @@
 # Changelog
 
+## 2.0.3
+- Fix: the release build failed because of an invalid XML comment in `GlassFollow.csproj`. No code changes.
+
 ## 2.0.2
 - Lower GPU load: only the regions of the screen that changed are copied for each captured frame (a full copy
   happens first, after pauses and every half second). `--full-copy` restores the old behaviour.
