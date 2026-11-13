@@ -3,7 +3,7 @@
     <OutputType>Exe</OutputType>
     <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
     <AssemblyName>GlassFollow</AssemblyName>
-    <Version>2.0.0</Version>
+    <Version>2.0.2</Version>
     <Description>Liquid-glass refraction behind chosen windows on Windows 11</Description>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -17,7 +17,7 @@
   <ItemGroup>
     <!-- Refraction shader from correct-liquid-glass (MIT). Copy it here first, see third_party/README.md -->
     <None Include="..\..\third_party\correct-liquid-glass\liquid-glass.hlsl" Link="liquid-glass.hlsl" CopyToOutputDirectory="PreserveNewest" />
-    <!-- Second glass style (CC BY-NC-SA 4.0, see third_party/uwidgets). Optional: without this file the 'style uwidgets' argument falls back to the default style. -->
+    <!-- Second glass style (CC BY-NC-SA 4.0, see third_party/uwidgets). Optional: without this file --style uwidgets falls back to the default style. -->
     <None Include="..\..\third_party\uwidgets\liquid-glass-uwidgets.hlsl" Link="liquid-glass-uwidgets.hlsl" CopyToOutputDirectory="PreserveNewest" Condition="Exists('..\..\third_party\uwidgets\liquid-glass-uwidgets.hlsl')" />
   </ItemGroup>
 </Project>

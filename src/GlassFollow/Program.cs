@@ -26,6 +26,7 @@ using WinRT;
 
 var inv = CultureInfo.InvariantCulture;
 float cornerArg = 22f, thickArg = 36f, padArg = 16f;
+bool fullCopy = false; // --full-copy: copy the whole monitor frame every time instead of only the changed regions
 var style = GlassStyle.Correct; // default glass style; a spec can override it with a =uw / =correct suffix
 // settings of the second style (uWidgets); the tint defaults follow uWidgets' dark / light theme
 float uwRefraction = 100f, uwBlur = 0f, uwTint = -1f, uwRim = 0.54f, uwAngle = 87f, uwSheen = 0f, uwSpecular = 0f;
@@ -40,6 +41,7 @@ for (int i = 0; i < args.Length; i++)
     string a = args[i];
     if (a == "--list") { listMode = true; continue; }
     if (a == "--hidden") { hidden = true; continue; } // no console window (for autostart)
+    if (a == "--full-copy") { fullCopy = true; continue; }
     if (a == "--no-shot") { noShot = true; continue; } // do not watch for Win+Shift+S / PrtScn
     if (a == "--setup") { setup = true; continue; } // interactive autostart setup
     if (a.StartsWith("--") && i + 1 < args.Length)
@@ -196,10 +198,15 @@ long processed = 0, skipped = 0;
 // --- glass windows share one class ---
 Native.WndProc proc = (h, m, w, l) =>
 {
-    if (m == 0x218 && (w == 0x7 || w == 0x12)) st.Request("resume from sleep"); // WM_POWERBROADCAST: PBT_APMRESUMESUSPEND / PBT_APMRESUMEAUTOMATIC
-    else if (m == 0x7E) st.Request("display change");                          // WM_DISPLAYCHANGE
+    try
+    {
+        if (m == 0x218 && (w == 0x7 || w == 0x12)) st.Request("resume from sleep"); // WM_POWERBROADCAST: PBT_APMRESUMESUSPEND / PBT_APMRESUMEAUTOMATIC
+        else if (m == 0x7E) st.Request("display change");                          // WM_DISPLAYCHANGE
+    }
+    catch { } // an exception thrown out of a window procedure kills the process
     return Native.DefWindowProcW(h, m, w, l);
 };
+KeepAlive.Proc = proc; // native code only holds a raw function pointer; without this the GC can free the delegate and the next window message crashes the process
 var wc = new Native.WNDCLASSEXW { cbSize = Marshal.SizeOf<Native.WNDCLASSEXW>(), lpfnWndProc = Marshal.GetFunctionPointerForDelegate(proc), lpszClassName = "GlassFollow" };
 Native.RegisterClassExW(ref wc);
 // invisible control window: the Windhawk mod looks for it to know that GlassFollow is running
@@ -467,6 +474,9 @@ var itemIid = new Guid("79C3F95B-31F7-4EC2-A464-632EF5D30760");
 var texIid = typeof(ID3D11Texture2D).GUID;
 try { await GraphicsCaptureAccess.RequestAccessAsync(GraphicsCaptureAccessKind.Borderless); } catch (Exception e) { Console.WriteLine($"borderless access: {e.Message}"); }
 
+// Minimum time between delivered frames. Half a period for caps near the refresh rate (timer jitter must not make a frame
+// miss its vsync slot); below that a longer interval, otherwise e.g. --fps 60 would still deliver about 120 frames a second.
+TimeSpan CaptureInterval() => TimeSpan.FromSeconds((fpsCap >= 120 ? 0.5 : 0.85) / fpsCap);
 long lastErrorRestart = -100000;
 void HandleError(Exception ex)
 {
@@ -488,7 +498,7 @@ void StartMon(Mon m)
     session.IsCursorCaptureEnabled = false;
     try { session.IsBorderRequired = false; } catch (Exception e) { Console.WriteLine($"IsBorderRequired: {e.Message}"); }
     // half of the frame period, so timer jitter never makes a frame miss its vsync slot
-    session.MinUpdateInterval = TimeSpan.FromSeconds(0.5 / fpsCap);
+    session.MinUpdateInterval = CaptureInterval();
     session.DirtyRegionMode = GraphicsCaptureDirtyRegionMode.ReportOnly;
     pool.FrameArrived += (sender, _) =>
     {
@@ -496,9 +506,31 @@ void StartMon(Mon m)
         {
         if (st.Resetting) return;
         using var frame = sender.TryGetNextFrame();
-        if (frame is null || st.Paused || st.Frozen) return; // paused (fullscreen app) or screenshot: no copies, no rendering
+        if (frame is null) return;
+        if (st.Paused || st.Frozen) { m.NeedFull = true; return; } // paused (fullscreen app) or screenshot: no copies, no rendering; changes are missed, so the next copy is a full one
         using var tex = new ID3D11Texture2D(frame.Surface.As<IDirect3DDxgiInterfaceAccess>().GetInterface(in texIid));
-        lock (ctx!) ctx.CopyResource(m.Tex!, tex); // newest full frame, so a moved/resized window can re-render without a new capture
+        // keep the newest full frame of the monitor, so a moved/resized window can re-render without a new capture.
+        // Only the regions that changed are copied; a full copy happens first, after pauses and every half second as a safety net.
+        var dirty = frame.DirtyRegions;
+        lock (ctx!)
+        {
+            long nowTick = Environment.TickCount64;
+            if (fullCopy || m.NeedFull || dirty.Count == 0 || nowTick - m.LastFull > 500)
+            {
+                ctx.CopyResource(m.Tex!, tex);
+                m.NeedFull = false;
+                m.LastFull = nowTick;
+            }
+            else
+            {
+                foreach (var d in dirty)
+                {
+                    int x0 = Math.Max(0, d.X), y0 = Math.Max(0, d.Y), x1 = Math.Min(m.W, d.X + d.Width), y1 = Math.Min(m.H, d.Y + d.Height);
+                    if (x1 > x0 && y1 > y0)
+                        ctx.CopySubresourceRegion(m.Tex!, 0, (uint)x0, (uint)y0, 0, tex, 0, new Box(x0, y0, 0, x1, y1, 1));
+                }
+            }
+        }
         foreach (var gl in st.Glasses)
         {
             var g = gl.Cur;
@@ -665,8 +697,8 @@ void SetPaused(bool paused)
 {
     st.Paused = paused;
     foreach (var m in mons) // while paused the capture only ticks once a second, so it barely costs the game anything
-        if (m.Session is not null) { try { m.Session.MinUpdateInterval = paused ? TimeSpan.FromSeconds(1) : TimeSpan.FromSeconds(0.5 / fpsCap); } catch { st.Request("capture session unusable"); } }
-    if (!paused) foreach (var gl in st.Glasses) gl.NeedRender = true;
+        if (m.Session is not null) { try { m.Session.MinUpdateInterval = paused ? TimeSpan.FromSeconds(1) : CaptureInterval(); } catch { st.Request("capture session unusable"); } }
+    if (!paused) { foreach (var m in mons) m.NeedFull = true; foreach (var gl in st.Glasses) gl.NeedRender = true; }
     Log(paused ? "fullscreen app in focus: glass paused (static)" : "glass resumed");
 }
 
@@ -709,6 +741,7 @@ void EndShot()
     foreach (var gl in st.Glasses) Native.SetWindowDisplayAffinity(gl.Hwnd, 0x11);
     Native.ResetEvent(shotEvent);
     st.Frozen = false;
+    foreach (var m in mons) m.NeedFull = true;
     foreach (var gl in st.Glasses) gl.NeedRender = true;
     Console.WriteLine("screenshot done: glass resumed");
 }
@@ -729,15 +762,20 @@ void UpdateShot()
 nint kbHook = 0;
 Native.HookProc kbProc = (code, wParam, lParam) =>
 {
-    if (code >= 0 && (wParam == 0x100 || wParam == 0x104)) // WM_KEYDOWN / WM_SYSKEYDOWN
+    try
     {
-        int vk = Marshal.ReadInt32(lParam);
-        bool win = (Native.GetAsyncKeyState(0x5B) & 0x8000) != 0 || (Native.GetAsyncKeyState(0x5C) & 0x8000) != 0;
-        bool shift = (Native.GetAsyncKeyState(0x10) & 0x8000) != 0;
-        if ((vk == 0x53 && win && shift) || vk == 0x2C) st.ShotRequested = true; // never swallow the key
+        if (code >= 0 && (wParam == 0x100 || wParam == 0x104)) // WM_KEYDOWN / WM_SYSKEYDOWN
+        {
+            int vk = Marshal.ReadInt32(lParam);
+            bool win = (Native.GetAsyncKeyState(0x5B) & 0x8000) != 0 || (Native.GetAsyncKeyState(0x5C) & 0x8000) != 0;
+            bool shift = (Native.GetAsyncKeyState(0x10) & 0x8000) != 0;
+            if ((vk == 0x53 && win && shift) || vk == 0x2C) st.ShotRequested = true; // never swallow the key
+        }
     }
+    catch { }
     return Native.CallNextHookEx(0, code, wParam, lParam);
 };
+KeepAlive.Hook = kbProc;
 if (!noShot) kbHook = Native.SetWindowsHookExW(13, kbProc, Native.GetModuleHandleW(null), 0); // WH_KEYBOARD_LL
 try { Console.CancelKeyPress += (_, e) => { e.Cancel = true; st.Run = false; }; } catch { } // no console when --hidden
 Native.timeBeginPeriod(1);
@@ -789,6 +827,13 @@ GC.KeepAlive(kbProc);
 foreach (var gl in glasses.Values) Native.ShowWindow(gl.Hwnd, 0);
 foreach (var m in mons) { m.Session?.Dispose(); m.Pool?.Dispose(); }
 
+// delegates that native code calls back into must stay referenced for the whole run
+static class KeepAlive
+{
+    public static Native.WndProc? Proc;
+    public static Native.HookProc? Hook;
+}
+
 enum GlassStyle { Correct, UWidgets }
 
 static class Util
@@ -811,6 +856,8 @@ sealed class Mon
     public ID3D11Texture2D? Tex;
     public Direct3D11CaptureFramePool? Pool;
     public GraphicsCaptureSession? Session;
+    public volatile bool NeedFull = true; // the next frame must be copied completely
+    public long LastFull;
 }
 
 sealed class Glass

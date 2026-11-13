@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.0.2
+- Lower GPU load: only the regions of the screen that changed are copied for each captured frame (a full copy
+  happens first, after pauses and every half second). `--full-copy` restores the old behaviour.
+- `--fps` below ~120 is now a real cap. Before, the capture delivered up to twice the requested rate.
+
+## 2.0.1
+- Fix: crash ("Unknown Hard Error") after a while. The window procedure and keyboard hook delegates could be freed by the
+  garbage collector while native code still called them; they are now kept alive and cannot throw into native code.
+
 ## 2.0.0
 - Second glass style, "uWidgets", next to the default one ("correct"). Choose it for all windows with
   `--style uwidgets`, or per window with a `=uw` suffix on a spec (`zen=uw`, `"explorer:CabinetWClass=correct"`).

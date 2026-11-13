@@ -70,6 +70,7 @@ GlassFollow.exe --list [--delay N]
 | `--uw-sheen N` | `0` | uWidgets style: broad sheen over the glass. |
 | `--uw-specular N` | `0` | uWidgets style: specular highlight. |
 | `--hidden` | off | Hide the console window (for autostart). |
+| `--full-copy` | off | Copy the whole monitor frame every time instead of only the changed regions (a fallback if you see stale pixels in the glass). |
 | `--no-shot` | off | Do not watch for Win+Shift+S / PrtScn (see [Screenshots](#screenshots)). |
 | `--setup` | | Open the interactive autostart setup (see [Autostart](#autostart)), then exit. |
 | `--list` | | Print visible windows (process, class, size, title) to build specs, then exit. |
@@ -222,6 +223,19 @@ powershell -ExecutionPolicy Bypass -File .\scripts\install-autostart.ps1 -Argume
 
 Remove the task from the setup menu or with `scripts\uninstall-autostart.ps1`. Keep the folder where it is: the task
 points to the exe (and `liquid-glass.hlsl` must stay next to it).
+
+## Performance
+
+The GPU load depends mostly on how often the glass is redrawn and how big the glass windows are.
+
+- **Lower `--fps`.** This is the biggest lever. `--fps 60` instead of 200 cuts the work to roughly a third; 60-100 is
+  usually enough, the glass only needs to follow what moves under it.
+- Keep `--uw-blur` at 0 (it adds two extra passes per window).
+- Large windows cost more than small ones because the shader runs for every pixel of the window. Leave windows you
+  rarely look at out of the spec list.
+- Glass is only redrawn when the pixels under the window change, and everything pauses while a fullscreen app has
+  focus.
+- Part of the load shows up under `dwm.exe` (screen capture and composition), not under GlassFollow.
 
 ## Troubleshooting
 
